@@ -128,3 +128,7 @@ coverage.xml
 simulation_results/
 metrics_data/
 reports/
+
+
+# Temporarily ignore those:
+.github/
