@@ -1,0 +1,43 @@
+# Prometheus Configuration for Demo Environment
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Grafana Cloud Integration
+remote_write:
+  - url: https://prometheus-prod-10-prod-us-central-0.grafana.net/api/prom/push
+    basic_auth:
+      username: $GRAFANA_CLOUD_USER
+      password: $GRAFANA_CLOUD_API_KEY
+
+scrape_configs:
+  # Banking Simulator API
+  - job_name: 'banking-simulator-api'
+    static_configs:
+      - targets: ['localhost:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+  # System Metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['localhost:9100']
+    scrape_interval: 30s
+
+  # Custom Application Metrics
+  - job_name: 'simulation-metrics'
+    static_configs:
+      - targets: ['localhost:8000']
+    metrics_path: '/api/metrics/prometheus'
+    scrape_interval: 15s
+
+# Alert Rules for Demo
+rule_files:
+  - "alert_rules.yml"
+
+# Basic Alerting
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093

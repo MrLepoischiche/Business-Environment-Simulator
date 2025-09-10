@@ -1,0 +1,259 @@
+# PostgreSQL Cluster for High Availability
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: banking-simulator-postgres
+  namespace: banking-simulator
+spec:
+  serviceName: banking-simulator-postgres
+
+  instances: 3  # Primary + 2 replicas
+  primaryUpdateStrategy: unsupervised
+  
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_preload_libraries: "pg_stat_statements"
+      pg_stat_statements.max: "10000"
+      pg_stat_statements.track: "all"
+      work_mem: "16MB"
+      maintenance_work_mem: "256MB"
+      effective_cache_size: "2GB"
+      checkpoint_completion_target: "0.9"
+      wal_buffers: "16MB"
+      default_statistics_target: "100"
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+      
+  bootstrap:
+    initdb:
+      database: banking_simulator
+      owner: app_user
+      secret:
+        name: postgres-credentials
+      options:
+        - "--auth-host=scram-sha-256"
+        - "--auth-local=scram-sha-256"
+        
+  storage:
+    size: 500Gi
+    storageClass: "fast-ssd"
+    
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"  
+      cpu: "2000m"
+      
+  monitoring:
+    enabled: true
+    
+  backup:
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      destinationPath: "s3://banking-simulator-backups/postgres"
+      s3Credentials:
+        accessKeyId:
+          name: s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: s3-credentials
+          key: SECRET_ACCESS_KEY
+      wal:
+        retention: "7d"
+      data:
+        retention: "30d"
+  
+  selector:
+    matchLabels:
+      app: banking-simulator-postgres
+  
+  template:
+    metadata:
+      labels:
+        app: banking-simulator-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:14
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: password
+        - name: POSTGRES_DB
+          value: "banking_simulator"
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: postgres-data
+
+---
+# Redis Cluster for Caching and Pub/Sub
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cluster
+  namespace: banking-simulator
+spec:
+  serviceName: redis-cluster
+  replicas: 6  # 3 masters + 3 replicas
+  selector:
+    matchLabels:
+      app: redis-cluster
+  template:
+    metadata:
+      labels:
+        app: redis-cluster
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        command:
+        - redis-server
+        args:
+        - /etc/redis/redis.conf
+        - --cluster-enabled
+        - "yes"
+        - --cluster-config-file
+        - /data/nodes.conf
+        - --cluster-node-timeout
+        - "5000"
+        - --appendonly
+        - "yes"
+        - --maxmemory
+        - "1gb"
+        - --maxmemory-policy
+        - "allkeys-lru"
+        ports:
+        - containerPort: 6379
+          name: client
+        - containerPort: 16379
+          name: gossip
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: config
+          mountPath: /etc/redis
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: config
+        configMap:
+          name: redis-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "fast-ssd"
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+# InfluxDB for Time Series Metrics
+apiVersion: apps/v1
+kind: StatefulSet  
+metadata:
+  name: influxdb-cluster
+  namespace: banking-simulator
+spec:
+  serviceName: influxdb-cluster
+  replicas: 3
+  selector:
+    matchLabels:
+      app: influxdb-cluster
+  template:
+    metadata:
+      labels:
+        app: influxdb-cluster
+    spec:
+      containers:
+      - name: influxdb
+        image: influxdb:2.7
+        env:
+        - name: DOCKER_INFLUXDB_INIT_MODE
+          value: "setup"
+        - name: DOCKER_INFLUXDB_INIT_USERNAME
+          value: "admin"
+        - name: DOCKER_INFLUXDB_INIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-credentials
+              key: password
+        - name: DOCKER_INFLUXDB_INIT_ORG
+          value: "banking-simulator"
+        - name: DOCKER_INFLUXDB_INIT_BUCKET
+          value: "metrics"
+        - name: DOCKER_INFLUXDB_INIT_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-credentials
+              key: token
+        ports:
+        - containerPort: 8086
+          name: http
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/influxdb2
+        - name: config
+          mountPath: /etc/influxdb2
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m" 
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8086
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8086
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: influxdb-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"] 
+      storageClassName: "fast-ssd"
+      resources:
+        requests:
+          storage: 200Gi
