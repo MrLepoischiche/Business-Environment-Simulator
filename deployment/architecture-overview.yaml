@@ -1,0 +1,34 @@
+# k8s-manifests/architecture-overview.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: architecture-overview
+data:
+  architecture.yaml: |
+    components:
+      frontend:
+        - react-app (CDN distribué)
+        - nginx-ingress (load balancer)
+      
+      api-tier:
+        - simulation-api (FastAPI)
+        - agent-manager-service
+        - metrics-collector-service
+        - event-dispatcher-service
+      
+      processing-tier:
+        - simulation-workers (Celery)
+        - agent-execution-workers
+        - metrics-aggregation-workers
+      
+      data-tier:
+        - postgresql-cluster (primary/replica)
+        - redis-cluster (cache/pubsub)
+        - influxdb-cluster (metrics)
+        - object-storage (reports/logs)
+      
+      monitoring:
+        - prometheus-cluster
+        - grafana-cluster
+        - jaeger-tracing
+        - elk-stack
